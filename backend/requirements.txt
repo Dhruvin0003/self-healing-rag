@@ -1,0 +1,8 @@
+python-dotenv
+qdrant-client
+sentence-transformers
+docling
+PyMuPDF
+langchain
+langchain-experimental
+tqdm

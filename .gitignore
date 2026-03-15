@@ -1,0 +1,58 @@
+# Secrets & config
+.env
+.env.*
+!.env.example
+
+# Private docs
+ROADMAP.md
+system_desing.md
+
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+*.egg-info/
+dist/
+build/
+.eggs/
+*.egg
+venv/
+.venv/
+env/
+
+# Jupyter
+.ipynb_checkpoints/
+
+# Data & models (can be large)
+backend/Data/*
+!backend/Data/.gitkeep
+*.safetensors
+*.bin
+*.onnx
+*.pt
+*.pth
+
+# HuggingFace / docling model caches
+.cache/
+**/.cache/
+
+# Qdrant local storage (if running locally)
+qdrant_storage/
+
+# Node (for future frontend)
+node_modules/
+
+# Logs
+*.log
+logs/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# IDE
+.vscode/
+.idea/
+*.suo
+*.user

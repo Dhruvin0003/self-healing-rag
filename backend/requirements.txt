@@ -6,3 +6,9 @@ PyMuPDF
 langchain
 langchain-experimental
 tqdm
+fastapi
+uvicorn[standard]
+google-generativeai
+pydantic-settings
+rank-bm25
+httpx

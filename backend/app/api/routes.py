@@ -1,35 +1,31 @@
 """
-POST /query        — Dense + BM25 + Graph retrieval RAG pipeline.
+POST /query        — Intelligent RAG pipeline.
 POST /ingest/graph — Extract entities from a chunk and store in Neo4j.
 
 Query flow:
-  1. Embed query → Dense retrieval (Qdrant)
-  2. BM25 keyword retrieval
-  3. Score-normalized fusion → deduplicated top-K chunks
-  4. Graph retrieval → entity sub-graph + concept/domain hierarchy
-  5. Generation via Gemini (vector context + graph knowledge)
-  6. Return answer + sources + graph_context + concept_context
+  1. Query Intelligence  — classify query; decide if graph is needed
+  2. Retriever Router    — dispatch Dense + BM25 + (optional) Graph
+  3. RRF Fusion          — merge & deduplicate with Reciprocal Rank Fusion
+  4. Generation          — Gemini grounded answer from fused context
+  5. Return              — answer + sources + graph_context + metadata
 """
 
-import logging
 from typing import List, Optional
 
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel, Field
 
 import os
-from app.retrieval import dense, bm25
+from app.retrieval import query_intelligence, router as retriever_router, fusion
 from app.generation import controller
-from app.graph import extractor, builder, retriever
-
-logger = logging.getLogger(__name__)
+from app.graph import extractor, builder
 
 router = APIRouter()
 
 class QueryRequest(BaseModel):
     query: str = Field(..., min_length=1, description="The user's question")
-    top_k: Optional[int] = Field(None, ge=1, le=20, description="Chunks to retrieve (default from settings)")
-    use_graph: bool = Field(True, description="Whether to include graph context in the answer")
+    top_k: Optional[int] = Field(None, ge=1, le=20, description="Chunks to retrieve (default from env TOP_K)")
+    use_graph: bool = Field(True, description="Allow graph retrieval when query warrants it")
 
 class SourceInfo(BaseModel):
     source_file: str
@@ -42,6 +38,8 @@ class QueryResponse(BaseModel):
     answer: str
     sources: List[SourceInfo]
     num_chunks_used: int
+    query_type: str = "factual"
+    needs_graph: bool = False
     graph_context: List[str] = []
     concept_context: List[str] = []
 
@@ -60,62 +58,43 @@ class GraphBatchIngestResponse(BaseModel):
     relations: list
 
 
-def _fuse_results(dense_results: List[dict], bm25_results: List[dict], top_k: int) -> List[dict]:
-    """
-    Normalise scores within each retriever to [0, 1], combine by chunk text key,
-    sum the normalised scores, and return the top-K unique chunks.
-    """
-    def _normalize(results: List[dict]) -> List[dict]:
-        if not results:
-            return []
-        max_score = max(r["score"] for r in results)
-        if max_score == 0:
-            return results
-        return [{**r, "score": r["score"] / max_score} for r in results]
-
-    merged: dict[str, dict] = {}
-
-    for chunk in _normalize(dense_results) + _normalize(bm25_results):
-        key = chunk["text"]
-        if key in merged:
-            merged[key]["score"] += chunk["score"]
-            if merged[key]["retriever"] != chunk["retriever"]:
-                merged[key]["retriever"] = "dense+bm25"
-        else:
-            merged[key] = dict(chunk)
-
-    ranked = sorted(merged.values(), key=lambda x: x["score"], reverse=True)
-    return ranked[:top_k]
-
-
 @router.post("/query", response_model=QueryResponse, summary="RAG Query")
 async def query(request: QueryRequest):
     """
-    Submit a question. The system retrieves the most relevant document chunks
-    (dense vector search + BM25 keyword search) and sub-graph from Neo4j,
-    fuses them, and asks Gemini to generate a grounded answer.
+    Submit a question.
+
+    pipeline:
+      1. **Query Intelligence** classifies the query and sets `needs_graph`.
+      2. **Retriever Router** dispatches Dense + BM25 always; Graph only when needed.
+      3. **RRF Fusion** merges all results into a single ranked context block.
+      4. **Generation Controller** produces a grounded answer via Gemini.
     """
     k = request.top_k or int(os.environ.get("TOP_K", 5))
 
-    # Vector + keyword retrieval
-    dense_results = dense.search(request.query, top_k=k)
-    bm25_results = bm25.search(request.query, top_k=k)
-    fused_chunks = _fuse_results(dense_results, bm25_results, top_k=k)
+    # Classify the query
+    profile = query_intelligence.classify(request.query)
 
-    # Graph retrieval
-    graph_triples: List[str] = []
-    concept_triples: List[str] = []
+    if not request.use_graph:
+        profile.needs_graph = False
 
-    if request.use_graph:
-        try:
-            graph_result = retriever.search(request.query)
-            graph_triples = graph_result.get("graph_triples", [])
-            concept_triples = graph_result.get("concept_triples", [])
-        except Exception as exc:
-            # Graph retrieval is best-effort; never block the answer
-            logger.warning("Graph retrieval failed (non-blocking): %s", exc)
+    # Route to appropriate retrievers
+    route_result = retriever_router.route(
+        query=request.query,
+        profile=profile,
+        top_k=k,
+    )
 
-    #Generation
+    # RRF Fusion of Dense + BM25 results
+    fused_chunks = fusion.fuse(
+        route_result["dense"],
+        route_result["bm25"],
+        top_k=k,
+    )
+
+    graph_triples = route_result["graph_triples"]
+    concept_triples = route_result["concept_triples"]
+
+    # Generate grounded answer
     answer = controller.generate(
         query=request.query,
         chunks=fused_chunks,
@@ -125,10 +104,10 @@ async def query(request: QueryRequest):
 
     sources = [
         SourceInfo(
-            source_file=c["source_file"],
-            chunk_index=c["chunk_index"],
-            score=round(c["score"], 4),
-            retriever=c["retriever"],
+            source_file=c.get("source_file", ""),
+            chunk_index=c.get("chunk_index", -1),
+            score=round(c.get("rrf_score", c.get("score", 0.0)), 6),
+            retriever=c.get("retriever", "unknown"),
         )
         for c in fused_chunks
     ]
@@ -138,6 +117,8 @@ async def query(request: QueryRequest):
         answer=answer,
         sources=sources,
         num_chunks_used=len(fused_chunks),
+        query_type=profile.query_type,
+        needs_graph=profile.needs_graph,
         graph_context=graph_triples,
         concept_context=concept_triples,
     )

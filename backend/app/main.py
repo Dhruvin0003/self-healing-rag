@@ -1,7 +1,24 @@
+import os
+from dotenv import load_dotenv
+
+load_dotenv()
+
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+from contextlib import asynccontextmanager
 
 from app.api.routes import router
+from app.graph.client import setup_constraints
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    # Startup: ensure Neo4j constraints are created
+    try:
+        setup_constraints()
+    except Exception as e:
+        print(f"Warning: Could not setup Neo4j constraints: {e}")
+    yield
+    # Shutdown logic (if any) goes here
 
 app = FastAPI(
     title="Self-Healing RAG",
@@ -10,6 +27,7 @@ app = FastAPI(
         "Submit a question and receive a Gemini-generated answer grounded in your document corpus."
     ),
     version="0.1.0",
+    lifespan=lifespan,
 )
 
 app.add_middleware(

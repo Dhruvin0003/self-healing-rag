@@ -13,7 +13,7 @@ from typing import List, Tuple
 from qdrant_client import QdrantClient
 from rank_bm25 import BM25Okapi
 
-from app.core.config import settings
+import os
 
 
 def _tokenize(text: str) -> List[str]:
@@ -28,8 +28,8 @@ def _build_index() -> Tuple[BM25Okapi, List[dict]]:
     Cached so this expensive operation only runs once per server lifetime.
     """
     client = QdrantClient(
-        url=settings.qdrant_url,
-        api_key=settings.qdrant_api_key or None,
+        url=os.environ.get("QDRANT_URL", "http://localhost:6333"),
+        api_key=os.environ.get("QDRANT_API_KEY") or None,
     )
 
     all_chunks: List[dict] = []
@@ -37,7 +37,7 @@ def _build_index() -> Tuple[BM25Okapi, List[dict]]:
 
     while True:
         response, next_offset = client.scroll(
-            collection_name=settings.collection_name,
+            collection_name=os.environ.get("COLLECTION_NAME", "rag_documents"),
             limit=256,
             offset=offset,
             with_payload=True,
@@ -74,7 +74,7 @@ def search(query: str, top_k: int = None) -> List[dict]:
             "retriever": "bm25"
         }
     """
-    k = top_k or settings.top_k
+    k = top_k or int(os.environ.get("TOP_K", 5))
     index, all_chunks = _build_index()
 
     tokenized_query = _tokenize(query)

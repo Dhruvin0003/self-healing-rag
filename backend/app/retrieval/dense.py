@@ -10,20 +10,20 @@ from typing import List
 from qdrant_client import QdrantClient
 from sentence_transformers import SentenceTransformer
 
-from app.core.config import settings
+import os
 
 
 @lru_cache(maxsize=1)
 def _get_model() -> SentenceTransformer:
-    device = "cuda" if settings.use_gpu else "cpu"
-    return SentenceTransformer(settings.embedding_model, device=device)
+    device = "cuda" if int(os.environ.get("USE_GPU", 0)) else "cpu"
+    return SentenceTransformer(os.environ.get("EMBEDDING_MODEL", "all-MiniLM-L6-v2"), device=device)
 
 
 @lru_cache(maxsize=1)
 def _get_client() -> QdrantClient:
     return QdrantClient(
-        url=settings.qdrant_url,
-        api_key=settings.qdrant_api_key or None,
+        url=os.environ.get("QDRANT_URL", "http://localhost:6333"),
+        api_key=os.environ.get("QDRANT_API_KEY") or None,
     )
 
 
@@ -41,14 +41,14 @@ def search(query: str, top_k: int = None) -> List[dict]:
             "retriever": "dense"
         }
     """
-    k = top_k or settings.top_k
+    k = top_k or int(os.environ.get("TOP_K", 5))
     model = _get_model()
     client = _get_client()
 
     query_vector = model.encode(query).tolist()
 
     results = client.search(
-        collection_name=settings.collection_name,
+        collection_name=os.environ.get("COLLECTION_NAME", "rag_documents"),
         query_vector=query_vector,
         limit=k,
         with_payload=True,

@@ -5,6 +5,7 @@ docling
 PyMuPDF
 langchain
 langchain-experimental
+langchain-huggingface
 tqdm
 fastapi
 uvicorn[standard]
@@ -13,3 +14,8 @@ pydantic-settings
 rank-bm25
 httpx
 neo4j
+sqlalchemy[asyncio]
+asyncpg
+psycopg2-binary
+ragas
+datasets

@@ -8,7 +8,9 @@ from fastapi.middleware.cors import CORSMiddleware
 from contextlib import asynccontextmanager
 
 from app.api.routes import router
+from app.api.evaluation_routes import router as evaluation_router
 from app.graph.client import setup_constraints
+from app.db.database import init_db
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -17,8 +19,14 @@ async def lifespan(app: FastAPI):
         setup_constraints()
     except Exception as e:
         print(f"Warning: Could not setup Neo4j constraints: {e}")
+
+    # Startup: create Postgres tables
+    try:
+        await init_db()
+    except Exception as e:
+        print(f"Warning: Could not initialise Postgres tables: {e}")
+
     yield
-    # Shutdown logic (if any) goes here
 
 app = FastAPI(
     title="Self-Healing RAG",
@@ -39,7 +47,7 @@ app.add_middleware(
 )
 
 app.include_router(router, prefix="/api/v1")
-
+app.include_router(evaluation_router, prefix="/api/v1")
 
 @app.get("/health", tags=["Health"])
 async def health():
